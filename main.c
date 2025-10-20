@@ -133,6 +133,54 @@ static const char *DARK_CSS =
 "}"
 ".navigation-sidebar {"
 "  background-color: #0f1115;"
+"}"
+".loading-dot {"
+"  background-color: #a0a0a0;"
+"  border-radius: 50%;"
+"  animation: bounce 1.4s infinite ease-in-out;"
+"}"
+".loading-dot:nth-child(1) { animation-delay: -0.32s; }"
+".loading-dot:nth-child(2) { animation-delay: -0.16s; }"
+".loading-dot:nth-child(3) { animation-delay: 0s; }"
+"@keyframes bounce {"
+"  0%, 80%, 100% { transform: scale(0.8); opacity: 0.5; }"
+"  40% { transform: scale(1.2); opacity: 1; }"
+"}"
+".code-block {"
+"  background-color: #1a1d23;"
+"  border: 1px solid #2a2f38;"
+"  border-radius: 8px;"
+"  font-family: 'Monospace', monospace;"
+"  font-size: 12px;"
+"  color: #e0e6f1;"
+"}"
+".header-1 {"
+"  font-size: 18px;"
+"  font-weight: bold;"
+"  color: #e6e6e6;"
+"  margin-top: 16px;"
+"  margin-bottom: 8px;"
+"}"
+".header-2 {"
+"  font-size: 16px;"
+"  font-weight: bold;"
+"  color: #e6e6e6;"
+"  margin-top: 12px;"
+"  margin-bottom: 6px;"
+"}"
+".header-3 {"
+"  font-size: 14px;"
+"  font-weight: bold;"
+"  color: #e6e6e6;"
+"  margin-top: 10px;"
+"  margin-bottom: 4px;"
+"}"
+".list-bullet {"
+"  color: #5b6cff;"
+"  font-weight: bold;"
+"}"
+".list-item {"
+"  color: #e0e6f1;"
 "}";
 
 static const char *LIGHT_CSS = 
@@ -219,6 +267,54 @@ static const char *LIGHT_CSS =
 "}"
 ".navigation-sidebar {"
 "  background-color: #ffffff;"
+"}"
+".loading-dot {"
+"  background-color: #6c757d;"
+"  border-radius: 50%;"
+"  animation: bounce 1.4s infinite ease-in-out;"
+"}"
+".loading-dot:nth-child(1) { animation-delay: -0.32s; }"
+".loading-dot:nth-child(2) { animation-delay: -0.16s; }"
+".loading-dot:nth-child(3) { animation-delay: 0s; }"
+"@keyframes bounce {"
+"  0%, 80%, 100% { transform: scale(0.8); opacity: 0.5; }"
+"  40% { transform: scale(1.2); opacity: 1; }"
+"}"
+".code-block {"
+"  background-color: #f8f9fa;"
+"  border: 1px solid #e9ecef;"
+"  border-radius: 8px;"
+"  font-family: 'Monospace', monospace;"
+"  font-size: 12px;"
+"  color: #333333;"
+"}"
+".header-1 {"
+"  font-size: 18px;"
+"  font-weight: bold;"
+"  color: #333333;"
+"  margin-top: 16px;"
+"  margin-bottom: 8px;"
+"}"
+".header-2 {"
+"  font-size: 16px;"
+"  font-weight: bold;"
+"  color: #333333;"
+"  margin-top: 12px;"
+"  margin-bottom: 6px;"
+"}"
+".header-3 {"
+"  font-size: 14px;"
+"  font-weight: bold;"
+"  color: #333333;"
+"  margin-top: 10px;"
+"  margin-bottom: 4px;"
+"}"
+".list-bullet {"
+"  color: #667eea;"
+"  font-weight: bold;"
+"}"
+".list-item {"
+"  color: #333333;"
 "}";
 
 /* ---------- Message/Conversation helpers ---------- */
@@ -550,6 +646,158 @@ static void save_theme_preference(gboolean dark_theme) {
 
 /* ---------- UI Message Bubbles ---------- */
 
+static GtkWidget* create_loading_bubble(void) {
+  GtkWidget *bubble = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  gtk_widget_add_css_class(bubble, "message-bubble");
+  gtk_widget_add_css_class(bubble, "assistant-message");
+  gtk_widget_set_halign(bubble, GTK_ALIGN_START);
+  
+  GtkWidget *loading_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+  gtk_widget_set_halign(loading_box, GTK_ALIGN_START);
+  
+  // Create 3 bouncing dots
+  for (int i = 0; i < 3; i++) {
+    GtkWidget *dot = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_size_request(dot, 8, 8);
+    gtk_widget_add_css_class(dot, "loading-dot");
+    gtk_box_append(GTK_BOX(loading_box), dot);
+  }
+  
+  gtk_box_append(GTK_BOX(bubble), loading_box);
+  return bubble;
+}
+
+/* ---------- Markdown Parsing ---------- */
+
+static GtkWidget* parse_markdown(const gchar *text) {
+  GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+  gchar **lines = g_strsplit(text, "\n", -1);
+  
+  gboolean in_code_block = FALSE;
+  GString *code_block_content = NULL;
+  GtkWidget *code_label = NULL;
+  
+  for (gchar **line = lines; *line; line++) {
+    gchar *trimmed = g_strstrip(g_strdup(*line));
+    
+    // Code blocks
+    if (g_str_has_prefix(trimmed, "```")) {
+      if (!in_code_block) {
+        // Start code block
+        in_code_block = TRUE;
+        code_block_content = g_string_new("");
+        code_label = gtk_label_new("");
+        gtk_label_set_wrap(GTK_LABEL(code_label), TRUE);
+        gtk_label_set_wrap_mode(GTK_LABEL(code_label), PANGO_WRAP_WORD_CHAR);
+        gtk_label_set_xalign(GTK_LABEL(code_label), 0.0);
+        gtk_label_set_selectable(GTK_LABEL(code_label), TRUE);
+        gtk_widget_add_css_class(code_label, "code-block");
+        gtk_widget_set_margin_top(code_label, 8);
+        gtk_widget_set_margin_bottom(code_label, 8);
+        gtk_widget_set_margin_start(code_label, 12);
+        gtk_widget_set_margin_end(code_label, 12);
+      } else {
+        // End code block
+        in_code_block = FALSE;
+        gtk_label_set_text(GTK_LABEL(code_label), code_block_content->str);
+        gtk_box_append(GTK_BOX(box), code_label);
+        g_string_free(code_block_content, TRUE);
+        code_block_content = NULL;
+      }
+      continue;
+    }
+    
+    if (in_code_block) {
+      if (code_block_content->len > 0) {
+        g_string_append(code_block_content, "\n");
+      }
+      g_string_append(code_block_content, trimmed);
+      continue;
+    }
+    
+    // Headers
+    if (g_str_has_prefix(trimmed, "# ")) {
+      GtkWidget *label = gtk_label_new(trimmed + 2);
+      gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+      gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
+      gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+      gtk_label_set_selectable(GTK_LABEL(label), TRUE);
+      gtk_widget_add_css_class(label, "header-1");
+      gtk_box_append(GTK_BOX(box), label);
+      continue;
+    }
+    
+    if (g_str_has_prefix(trimmed, "## ")) {
+      GtkWidget *label = gtk_label_new(trimmed + 3);
+      gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+      gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
+      gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+      gtk_label_set_selectable(GTK_LABEL(label), TRUE);
+      gtk_widget_add_css_class(label, "header-2");
+      gtk_box_append(GTK_BOX(box), label);
+      continue;
+    }
+    
+    if (g_str_has_prefix(trimmed, "### ")) {
+      GtkWidget *label = gtk_label_new(trimmed + 4);
+      gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+      gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
+      gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+      gtk_label_set_selectable(GTK_LABEL(label), TRUE);
+      gtk_widget_add_css_class(label, "header-3");
+      gtk_box_append(GTK_BOX(box), label);
+      continue;
+    }
+    
+    // Lists
+    if (g_str_has_prefix(trimmed, "- ") || g_str_has_prefix(trimmed, "* ")) {
+      GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+      GtkWidget *bullet = gtk_label_new("•");
+      gtk_widget_add_css_class(bullet, "list-bullet");
+      gtk_box_append(GTK_BOX(hbox), bullet);
+      
+      GtkWidget *label = gtk_label_new(trimmed + 2);
+      gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+      gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
+      gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+      gtk_label_set_selectable(GTK_LABEL(label), TRUE);
+      gtk_widget_add_css_class(label, "list-item");
+      gtk_box_append(GTK_BOX(hbox), label);
+      
+      gtk_box_append(GTK_BOX(box), hbox);
+      continue;
+    }
+    
+    // Regular text
+    if (*trimmed != '\0') {
+      GtkWidget *label = gtk_label_new(trimmed);
+      gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+      gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
+      gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+      gtk_label_set_selectable(GTK_LABEL(label), TRUE);
+      gtk_widget_add_css_class(label, "message-content");
+      gtk_box_append(GTK_BOX(box), label);
+    } else {
+      // Empty line for spacing
+      GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+      gtk_widget_set_size_request(spacer, -1, 8);
+      gtk_box_append(GTK_BOX(box), spacer);
+    }
+    
+    g_free(trimmed);
+  }
+  
+  // Handle case where code block isn't properly closed
+  if (in_code_block && code_block_content) {
+    gtk_label_set_text(GTK_LABEL(code_label), code_block_content->str);
+    gtk_box_append(GTK_BOX(box), code_label);
+    g_string_free(code_block_content, TRUE);
+  }
+  
+  g_strfreev(lines);
+  return box;
+}
+
 static GtkWidget* create_message_bubble(const gchar *role, const gchar *content) {
   GtkWidget *bubble = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
   gtk_widget_add_css_class(bubble, "message-bubble");
@@ -562,14 +810,19 @@ static GtkWidget* create_message_bubble(const gchar *role, const gchar *content)
       gtk_widget_set_halign(bubble, GTK_ALIGN_START);
   }
   
-  GtkWidget *label = gtk_label_new(content);
-  gtk_label_set_wrap(GTK_LABEL(label), TRUE);
-  gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
-  gtk_label_set_xalign(GTK_LABEL(label), 0.0);
-  gtk_label_set_selectable(GTK_LABEL(label), TRUE);
-  gtk_widget_add_css_class(label, "message-content");
-  
-  gtk_box_append(GTK_BOX(bubble), label);
+  // Parse markdown for assistant messages
+  if (g_strcmp0(role, "assistant") == 0 && content && *content) {
+    GtkWidget *content_box = parse_markdown(content);
+    gtk_box_append(GTK_BOX(bubble), content_box);
+  } else {
+    GtkWidget *label = gtk_label_new(content);
+    gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+    gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+    gtk_label_set_selectable(GTK_LABEL(label), TRUE);
+    gtk_widget_add_css_class(label, "message-content");
+    gtk_box_append(GTK_BOX(bubble), label);
+  }
   
   return bubble;
 }
@@ -661,8 +914,6 @@ static void update_conversations_list(AppWidgets *aw) {
 
 /* ---------- Theme Management ---------- */
 
-/* ---------- Theme Management ---------- */
-
 static void apply_theme(AppWidgets *aw, gboolean dark_theme) {
   // Create new provider
   GtkCssProvider *css_provider = gtk_css_provider_new();
@@ -729,21 +980,73 @@ typedef struct {
 static gboolean ui_append_chunk_cb(gpointer data) {
   AppendChunkData *d = (AppendChunkData*)data;
   if (d->aw && d->aw->alive && d->aw->current_assistant_box) {
-      GtkWidget *child = gtk_widget_get_first_child(d->aw->current_assistant_box);
-      if (GTK_IS_LABEL(child)) {
-          const gchar *current = gtk_label_get_text(GTK_LABEL(child));
-          gchar *new_text = g_strconcat(current, d->chunk, NULL);
-          gtk_label_set_text(GTK_LABEL(child), new_text);
-          g_free(new_text);
-      }
-      
-      if (d->aw->current_conversation && d->aw->current_conversation->messages->len > 0) {
-          Message *last_msg = g_ptr_array_index(d->aw->current_conversation->messages, 
-                                                d->aw->current_conversation->messages->len - 1);
-          if (g_strcmp0(last_msg->role, "assistant") == 0) {
-              gchar *new_content = g_strconcat(last_msg->content, d->chunk, NULL);
-              g_free(last_msg->content);
-              last_msg->content = new_content;
+      // Check if this is the first chunk and we have a loading bubble
+      GtkWidget *first_child = gtk_widget_get_first_child(d->aw->current_assistant_box);
+      if (first_child && gtk_widget_get_css_classes(first_child) && 
+          gtk_widget_has_css_class(first_child, "loading-dot")) {
+          // Replace loading bubble with content bubble
+          GtkWidget *new_bubble = create_message_bubble("assistant", d->chunk);
+          gtk_widget_set_hexpand(new_bubble, TRUE);
+          
+          // Get parent and find position
+          GtkWidget *parent = gtk_widget_get_parent(d->aw->current_assistant_box);
+          GtkWidget *prev_sibling = gtk_widget_get_prev_sibling(d->aw->current_assistant_box);
+          
+          // Remove loading bubble and add content bubble
+          gtk_box_remove(GTK_BOX(parent), d->aw->current_assistant_box);
+          if (prev_sibling) {
+              gtk_box_insert_child_after(GTK_BOX(parent), new_bubble, prev_sibling);
+          } else {
+              gtk_box_prepend(GTK_BOX(parent), new_bubble);
+          }
+          
+          d->aw->current_assistant_box = new_bubble;
+      } else {
+          // Append to existing content
+          GtkWidget *child = gtk_widget_get_first_child(d->aw->current_assistant_box);
+          if (GTK_IS_BOX(child)) {
+              // This is a markdown box, we need to handle this differently
+              // For simplicity, let's recreate the bubble with accumulated content
+              if (d->aw->current_conversation && d->aw->current_conversation->messages->len > 0) {
+                  Message *last_msg = g_ptr_array_index(d->aw->current_conversation->messages, 
+                                                      d->aw->current_conversation->messages->len - 1);
+                  if (g_strcmp0(last_msg->role, "assistant") == 0) {
+                      gchar *new_content = g_strconcat(last_msg->content, d->chunk, NULL);
+                      
+                      // Replace the bubble
+                      GtkWidget *parent = gtk_widget_get_parent(d->aw->current_assistant_box);
+                      GtkWidget *prev_sibling = gtk_widget_get_prev_sibling(d->aw->current_assistant_box);
+                      
+                      GtkWidget *new_bubble = create_message_bubble("assistant", new_content);
+                      gtk_box_remove(GTK_BOX(parent), d->aw->current_assistant_box);
+                      if (prev_sibling) {
+                          gtk_box_insert_child_after(GTK_BOX(parent), new_bubble, prev_sibling);
+                      } else {
+                          gtk_box_prepend(GTK_BOX(parent), new_bubble);
+                      }
+                      
+                      d->aw->current_assistant_box = new_bubble;
+                      g_free(last_msg->content);
+                      last_msg->content = new_content;
+                  }
+              }
+          } else if (GTK_IS_LABEL(child)) {
+              // Simple label - just append text
+              const gchar *current = gtk_label_get_text(GTK_LABEL(child));
+              gchar *new_text = g_strconcat(current, d->chunk, NULL);
+              gtk_label_set_text(GTK_LABEL(child), new_text);
+              g_free(new_text);
+              
+              // Update conversation
+              if (d->aw->current_conversation && d->aw->current_conversation->messages->len > 0) {
+                  Message *last_msg = g_ptr_array_index(d->aw->current_conversation->messages, 
+                                                      d->aw->current_conversation->messages->len - 1);
+                  if (g_strcmp0(last_msg->role, "assistant") == 0) {
+                      gchar *new_content = g_strconcat(last_msg->content, d->chunk, NULL);
+                      g_free(last_msg->content);
+                      last_msg->content = new_content;
+                  }
+              }
           }
       }
       
@@ -758,13 +1061,17 @@ static gboolean ui_append_chunk_cb(gpointer data) {
 static gboolean ui_append_assistant_prefix_cb(gpointer data) {
   AppWidgets *aw = (AppWidgets*)data;
   if (aw && aw->alive) {
-      GtkWidget *bubble = create_message_bubble("assistant", "");
+      GtkWidget *bubble = create_loading_bubble();
       gtk_box_append(aw->chat_box, bubble);
       aw->current_assistant_box = bubble;
       
       if (aw->current_conversation) {
           conversation_add_message(aw->current_conversation, "assistant", "");
       }
+      
+      // Auto-scroll to bottom
+      GtkAdjustment *vadj = gtk_scrolled_window_get_vadjustment(aw->chat_scroller);
+      gtk_adjustment_set_value(vadj, gtk_adjustment_get_upper(vadj));
   }
   return G_SOURCE_REMOVE;
 }
