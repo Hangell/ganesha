@@ -8,11 +8,13 @@ typedef struct {
 
     GCancellable  *cancellable;
     gboolean       in_progress;
+    gboolean       alive;        // <- flag: janela viva
 } AppWidgets;
 
 /* ---------- helpers UI ---------- */
 
 static void append_text(GtkTextView *view, const char *text) {
+    if (!view) return; // guarda extra
     GtkTextBuffer *buf = gtk_text_view_get_buffer(view);
     GtkTextIter end;
     gtk_text_buffer_get_end_iter(buf, &end);
@@ -23,9 +25,12 @@ static void append_text(GtkTextView *view, const char *text) {
 }
 
 static void set_streaming_state(AppWidgets *aw, gboolean running) {
+    if (!aw || !aw->alive) return;
     aw->in_progress = running;
-    gtk_widget_set_sensitive(GTK_WIDGET(aw->send_btn), !running);
-    gtk_widget_set_sensitive(GTK_WIDGET(aw->stop_btn), running);
+    if (aw->send_btn)
+        gtk_widget_set_sensitive(GTK_WIDGET(aw->send_btn), !running);
+    if (aw->stop_btn)
+        gtk_widget_set_sensitive(GTK_WIDGET(aw->stop_btn), running);
 }
 
 /* ---------- callbacks postados no main loop ---------- */
@@ -37,7 +42,8 @@ typedef struct {
 
 static gboolean ui_append_chunk_cb(gpointer data) {
     AppendChunkData *d = (AppendChunkData*)data;
-    append_text(d->aw->output_view, d->chunk);
+    if (d->aw && d->aw->alive)
+        append_text(d->aw->output_view, d->chunk);
     g_free(d->chunk);
     g_free(d);
     return G_SOURCE_REMOVE;
@@ -45,14 +51,20 @@ static gboolean ui_append_chunk_cb(gpointer data) {
 
 static gboolean ui_append_assistant_prefix_cb(gpointer data) {
     AppWidgets *aw = (AppWidgets*)data;
-    append_text(aw->output_view, "Assistant: ");
+    if (aw && aw->alive)
+        append_text(aw->output_view, "Assistant: ");
     return G_SOURCE_REMOVE;
 }
 
 static gboolean ui_finish_stream_cb(gpointer data) {
     AppWidgets *aw = (AppWidgets*)data;
-    append_text(aw->output_view, "\n");
-    set_streaming_state(aw, FALSE);
+    if (aw && aw->alive) {
+        append_text(aw->output_view, "\n");
+        set_streaming_state(aw, FALSE);
+    }
+    if (aw && aw->cancellable) {
+        g_clear_object(&aw->cancellable); // liberar com segurança ao fim
+    }
     return G_SOURCE_REMOVE;
 }
 
@@ -66,8 +78,15 @@ typedef struct {
 static gpointer stream_worker(gpointer data) {
     WorkerArgs *wa = (WorkerArgs*)data;
     AppWidgets *aw = wa->aw;
-    GCancellable *c = aw->cancellable;
 
+    // se já não está vivo, encerra cedo
+    if (!aw || !aw->alive) {
+        g_free(wa->prompt_copy);
+        g_free(wa);
+        return NULL;
+    }
+
+    GCancellable *c = aw->cancellable;
     g_idle_add(ui_append_assistant_prefix_cb, aw);
 
     gchar *reply = g_strdup_printf(
@@ -84,6 +103,9 @@ static gpointer stream_worker(gpointer data) {
         g_idle_add(ui_append_chunk_cb, chunk);
 
         g_usleep(80 * 1000); // ~80ms entre pedaços
+
+        // se a UI morreu durante o stream, para
+        if (!aw->alive) break;
     }
 
     g_idle_add(ui_finish_stream_cb, aw);
@@ -98,12 +120,14 @@ static gpointer stream_worker(gpointer data) {
 /* ---------- callbacks UI ---------- */
 
 static void start_stream_simulation(AppWidgets *aw, const char *user_text) {
-    if (aw->in_progress) return;
+    if (!aw || !aw->alive || aw->in_progress) return;
 
     gchar *user_line = g_strdup_printf("You: %s\n", user_text);
     append_text(aw->output_view, user_line);
     g_free(user_line);
 
+    // reseta cancellable anterior se sobrou
+    if (aw->cancellable) g_clear_object(&aw->cancellable);
     aw->cancellable = g_cancellable_new();
     set_streaming_state(aw, TRUE);
 
@@ -117,6 +141,8 @@ static void start_stream_simulation(AppWidgets *aw, const char *user_text) {
 static void on_send_clicked(GtkButton *btn, gpointer user_data) {
     (void)btn;
     AppWidgets *aw = (AppWidgets*)user_data;
+    if (!aw || !aw->alive) return;
+
     const char *txt = gtk_editable_get_text(GTK_EDITABLE(aw->prompt_entry));
     if (txt && *txt) {
         gtk_editable_set_text(GTK_EDITABLE(aw->prompt_entry), "");
@@ -132,10 +158,20 @@ static void on_entry_activate(GtkEntry *entry, gpointer user_data) {
 static void on_stop_clicked(GtkButton *btn, gpointer user_data) {
     (void)btn;
     AppWidgets *aw = (AppWidgets*)user_data;
-    if (aw->in_progress && aw->cancellable) {
+    if (aw && aw->in_progress && aw->cancellable) {
         g_cancellable_cancel(aw->cancellable);
-        g_clear_object(&aw->cancellable);
+        // não limpar aqui; o finish_cb limpa com segurança
     }
+}
+
+/* cancelar streams e marcar UI como morta ao fechar a janela */
+static void on_window_destroy(GtkWidget *w, gpointer user_data) {
+    (void)w;
+    AppWidgets *aw = (AppWidgets*)user_data;
+    if (!aw) return;
+    aw->alive = FALSE;
+    if (aw->cancellable)
+        g_cancellable_cancel(aw->cancellable);
 }
 
 /* ---------- bootstrap ---------- */
@@ -194,10 +230,12 @@ static void on_activate(GApplication *app, gpointer user_data) {
     aw->stop_btn     = GTK_BUTTON(stop_btn);
     aw->cancellable  = NULL;
     aw->in_progress  = FALSE;
+    aw->alive        = TRUE;
 
     g_signal_connect(send_btn, "clicked",  G_CALLBACK(on_send_clicked), aw);
     g_signal_connect(stop_btn, "clicked",  G_CALLBACK(on_stop_clicked), aw);
     g_signal_connect(entry,    "activate", G_CALLBACK(on_entry_activate), aw);
+    g_signal_connect(win,      "destroy",  G_CALLBACK(on_window_destroy), aw);
 
     adw_toolbar_view_set_content(view, vbox);
     adw_application_window_set_content(win, GTK_WIDGET(view));
