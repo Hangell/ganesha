@@ -3,10 +3,12 @@ project('ganesha', 'c',
   default_options: ['warning_level=2', 'c_std=c11']
 )
 
-gtkdep = dependency('gtk4')
-adwdep = dependency('libadwaita-1')
+gtkdep   = dependency('gtk4')
+adwdep   = dependency('libadwaita-1')
+soupdep  = dependency('libsoup-3.0')
+jsondep  = dependency('json-glib-1.0')
 
 executable('ganesha',
   sources: ['main.c'],
-  dependencies: [gtkdep, adwdep]
+  dependencies: [gtkdep, adwdep, soupdep, jsondep]
 )
