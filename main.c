@@ -1,4 +1,6 @@
 #include <adwaita.h>
+#include <gtk/gtk.h>
+#include <gdk/gdkkeysyms.h>
 #include <libsoup/soup.h>
 #include <json-glib/json-glib.h>
 #include <gtksourceview/gtksource.h>
@@ -1133,190 +1135,51 @@ static void set_streaming_state(AppWidgets *aw, gboolean running) {
   update_action_button(aw);
 }
 
+/* ---------- worker: Ollama streaming (forward decls used later) ---------- */
+typedef struct {
+  AppWidgets *aw;
+  char       *prompt_copy;
+  char       *model_copy;
+} WorkerArgs;
+
+static void on_action_btn_clicked(GtkButton *btn, gpointer user_data); /* <-- forward decl */
+
 /* --------- Key press Enter Send Msg -------- */
+static gboolean
+on_prompt_key_pressed(GtkEventControllerKey *controller,
+                      guint                  keyval,
+                      guint                  keycode,
+                      GdkModifierType        state,
+                      gpointer               user_data)
+{
+    AppWidgets *app = (AppWidgets *)user_data;
+    (void)controller; (void)keycode;
 
+    // Enter (sem Shift) envia; Shift+Enter quebra linha
+    if (keyval == GDK_KEY_Return || keyval == GDK_KEY_KP_Enter) {
+        if (state & GDK_SHIFT_MASK) {
+            return FALSE; // deixa o TextView inserir nova linha
+        }
 
-/* ---------- Conversations List UI ---------- */
+        // Lê o texto e dispara o mesmo fluxo do botão "Send"
+        GtkTextBuffer *buffer = gtk_text_view_get_buffer(app->prompt_text_view);
+        GtkTextIter start, end;
+        gtk_text_buffer_get_bounds(buffer, &start, &end);
+        gchar *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE);
 
-static void update_conversations_list(AppWidgets *aw) {
-  if (!aw || !aw->conversations_list) return;
-  
-  GtkWidget *child;
-  while ((child = gtk_widget_get_first_child(GTK_WIDGET(aw->conversations_list)))) {
-      gtk_list_box_remove(aw->conversations_list, child);
-  }
-  
-  for (gint i = aw->conversations->len - 1; i >= 0; i--) {
-      Conversation *conv = g_ptr_array_index(aw->conversations, i);
-      
-      GtkWidget *row = gtk_list_box_row_new();
-      gtk_widget_add_css_class(row, "conversation-item");
-      g_object_set_data(G_OBJECT(row), "conversation", conv);
-      
-      GtkWidget *label = gtk_label_new(conv->title ? conv->title : "New Chat");
-      gtk_widget_set_halign(label, GTK_ALIGN_START);
-      gtk_widget_set_margin_start(label, 16);
-      gtk_widget_set_margin_end(label, 16);
-      gtk_widget_set_margin_top(label, 8);
-      gtk_widget_set_margin_bottom(label, 8);
-      gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
-      
-      gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), label);
-      gtk_list_box_append(aw->conversations_list, row);
-      
-      if (conv == aw->current_conversation) {
-          gtk_list_box_select_row(aw->conversations_list, GTK_LIST_BOX_ROW(row));
-      }
-  }
-}
+        if (text && *text) {
+            on_action_btn_clicked(GTK_BUTTON(app->action_btn), app); // envia programaticamente
+            gtk_text_buffer_set_text(buffer, "", -1); // limpa
+        }
+        g_free(text);
 
-/* ---------- Theme Management ---------- */
-
-static void apply_theme(AppWidgets *aw, gboolean dark_theme) {
-  GtkCssProvider *css_provider = gtk_css_provider_new();
-  AdwStyleManager *style = adw_style_manager_get_default();
-  adw_style_manager_set_color_scheme(style, dark_theme ? ADW_COLOR_SCHEME_FORCE_DARK : ADW_COLOR_SCHEME_FORCE_LIGHT);
-  
-  if (dark_theme) {
-    gtk_css_provider_load_from_string(css_provider, DARK_CSS);
-  } else {
-    gtk_css_provider_load_from_string(css_provider, LIGHT_CSS);
-  }
-  
-  GdkDisplay *display = gdk_display_get_default();
-  gtk_style_context_add_provider_for_display(
-      display,
-      GTK_STYLE_PROVIDER(css_provider),
-      GTK_STYLE_PROVIDER_PRIORITY_APPLICATION
-  );
-  
-  if (aw->theme_btn) {
-    if (dark_theme) {
-      gtk_button_set_icon_name(GTK_BUTTON(aw->theme_btn), "weather-clear-night-symbolic");
-    } else {
-      gtk_button_set_icon_name(GTK_BUTTON(aw->theme_btn), "weather-clear-symbolic");
+        // Impede que o Enter insira nova linha
+        return TRUE;
     }
-  }
-  
-  if (aw->chat_box) {
-    gtk_widget_queue_draw(GTK_WIDGET(aw->chat_box));
-  }
-  if (aw->conversations_list) {
-    gtk_widget_queue_draw(GTK_WIDGET(aw->conversations_list));
-  }
+
+    return FALSE; // outras teclas: comportamento padrão
 }
 
-static void on_theme_toggled(GtkButton *btn, gpointer user_data) {
-  (void)btn;
-  AppWidgets *aw = (AppWidgets*)user_data;
-  if (!aw) return;
-  
-  aw->dark_theme = !aw->dark_theme;
-  apply_theme(aw, aw->dark_theme);
-  save_theme_preference(aw->dark_theme);
-}
-
-/* ---------- Image Handling ---------- */
-
-static gchar* image_to_base64(const gchar *filepath) {
-  gchar *contents = NULL;
-  gsize length = 0;
-  
-  if (!g_file_get_contents(filepath, &contents, &length, NULL)) {
-    return NULL;
-  }
-  
-  gchar *base64 = g_base64_encode((const guchar*)contents, length);
-  g_free(contents);
-  return base64;
-}
-
-static void on_image_selected(GtkFileDialog *dialog, GAsyncResult *result, gpointer user_data) {
-  AppWidgets *aw = (AppWidgets*)user_data;
-  GError *error = NULL;
-  
-  GFile *file = gtk_file_dialog_open_finish(dialog, result, &error);
-  if (error) {
-    g_error_free(error);
-    return;
-  }
-  
-  if (!file) return;
-  
-  gchar *filepath = g_file_get_path(file);
-  gchar *base64 = image_to_base64(filepath);
-  
-  if (base64) {
-    g_ptr_array_add(aw->pending_images, base64);
-    
-    // Show image preview in input area
-    GtkTextBuffer *buffer = gtk_text_view_get_buffer(aw->prompt_text_view);
-    GtkTextIter end;
-    gtk_text_buffer_get_end_iter(buffer, &end);
-    
-    gchar *markup = g_strdup_printf("\n[Image: %s attached]\n", g_path_get_basename(filepath));
-    gtk_text_buffer_insert(buffer, &end, markup, -1);
-    g_free(markup);
-  }
-  
-  g_free(filepath);
-  g_object_unref(file);
-}
-
-static void on_attach_clicked(GtkButton *btn, gpointer user_data) {
-  (void)btn;
-  AppWidgets *aw = (AppWidgets*)user_data;
-  if (!aw) return;
-  
-  GtkFileDialog *dialog = gtk_file_dialog_new();
-  gtk_file_dialog_set_title(dialog, "Select Image");
-  
-  GtkFileFilter *filter = gtk_file_filter_new();
-  gtk_file_filter_set_name(filter, "Images");
-  gtk_file_filter_add_mime_type(filter, "image/png");
-  gtk_file_filter_add_mime_type(filter, "image/jpeg");
-  gtk_file_filter_add_mime_type(filter, "image/gif");
-  gtk_file_filter_add_mime_type(filter, "image/webp");
-  
-  GListStore *filters = g_list_store_new(GTK_TYPE_FILE_FILTER);
-  g_list_store_append(filters, filter);
-  gtk_file_dialog_set_filters(dialog, G_LIST_MODEL(filters));
-  
-  GtkWindow *window = GTK_WINDOW(gtk_widget_get_root(GTK_WIDGET(btn)));
-  gtk_file_dialog_open(dialog, window, NULL, 
-                      (GAsyncReadyCallback)on_image_selected, aw);
-  
-  g_object_unref(filters);
-  g_object_unref(filter);
-}
-
-/* ---------- Audio Handling (Placeholder) ---------- */
-
-static void on_audio_response(GtkDialog *dialog, gint response_id, gpointer user_data) {
-  (void)response_id;
-  (void)user_data;
-  gtk_window_destroy(GTK_WINDOW(dialog));
-}
-
-static void on_audio_clicked(GtkButton *btn, gpointer user_data) {
-  (void)btn;
-  AppWidgets *aw = (AppWidgets*)user_data;
-  if (!aw) return;
-  
-  // TODO: Implement audio recording/playback
-  GtkWidget *dialog = adw_message_dialog_new(
-      GTK_WINDOW(gtk_widget_get_root(GTK_WIDGET(btn))),
-      "Audio Feature",
-      "Audio recording and playback feature coming soon!"
-  );
-  
-  adw_message_dialog_add_responses(ADW_MESSAGE_DIALOG(dialog),
-      "ok", "OK",
-      NULL);
-  
-  g_signal_connect(dialog, "response", G_CALLBACK(on_audio_response), NULL);
-  gtk_window_present(GTK_WINDOW(dialog));
-}
 
 /* ---------- Callback postados no main loop ---------- */
 
@@ -1393,6 +1256,8 @@ static gboolean ui_append_assistant_prefix_cb(gpointer data) {
   }
   return G_SOURCE_REMOVE;
 }
+
+static void update_conversations_list(AppWidgets *aw);
 
 static gboolean ui_finish_stream_cb(gpointer data) {
   AppWidgets *aw = (AppWidgets*)data;
@@ -1508,12 +1373,6 @@ static gpointer load_models_worker(gpointer data) {
 }
 
 /* ---------- worker: Ollama streaming ---------- */
-
-typedef struct {
-  AppWidgets *aw;
-  char       *prompt_copy;
-  char       *model_copy;
-} WorkerArgs;
 
 static gchar *build_ollama_chat_body(const char *model, Conversation *conv) {
   JsonBuilder *b = json_builder_new();
@@ -1733,6 +1592,198 @@ static void on_action_btn_clicked(GtkButton *btn, gpointer user_data) {
       g_free(text);
   }
 }
+
+static void on_attach_clicked(GtkButton *btn, gpointer user_data);
+static void on_audio_clicked(GtkButton *btn, gpointer user_data);
+static void on_new_chat_clicked(GtkButton *btn, gpointer user_data);
+static void on_conversation_selected(GtkListBox *box, GtkListBoxRow *row, gpointer user_data);
+static void on_model_selected(GtkDropDown *dropdown, GParamSpec *pspec, gpointer user_data);
+static void on_window_destroy(GtkWidget *w, gpointer user_data);
+static void on_text_buffer_changed(GtkTextBuffer *buffer, gpointer user_data);
+
+/* ---------- Image Handling ---------- */
+
+static gchar* image_to_base64(const gchar *filepath) {
+  gchar *contents = NULL;
+  gsize length = 0;
+  
+  if (!g_file_get_contents(filepath, &contents, &length, NULL)) {
+    return NULL;
+  }
+  
+  gchar *base64 = g_base64_encode((const guchar*)contents, length);
+  g_free(contents);
+  return base64;
+}
+
+static void on_image_selected(GtkFileDialog *dialog, GAsyncResult *result, gpointer user_data) {
+  AppWidgets *aw = (AppWidgets*)user_data;
+  GError *error = NULL;
+  
+  GFile *file = gtk_file_dialog_open_finish(dialog, result, &error);
+  if (error) {
+    g_error_free(error);
+    return;
+  }
+  
+  if (!file) return;
+  
+  gchar *filepath = g_file_get_path(file);
+  gchar *base64 = image_to_base64(filepath);
+  
+  if (base64) {
+    g_ptr_array_add(aw->pending_images, base64);
+    
+    // Show image preview in input area
+    GtkTextBuffer *buffer = gtk_text_view_get_buffer(aw->prompt_text_view);
+    GtkTextIter end;
+    gtk_text_buffer_get_end_iter(buffer, &end);
+    
+    gchar *markup = g_strdup_printf("\n[Image: %s attached]\n", g_path_get_basename(filepath));
+    gtk_text_buffer_insert(buffer, &end, markup, -1);
+    g_free(markup);
+  }
+  
+  g_free(filepath);
+  g_object_unref(file);
+}
+
+static void on_attach_clicked(GtkButton *btn, gpointer user_data) {
+  (void)btn;
+  AppWidgets *aw = (AppWidgets*)user_data;
+  if (!aw) return;
+  
+  GtkFileDialog *dialog = gtk_file_dialog_new();
+  gtk_file_dialog_set_title(dialog, "Select Image");
+  
+  GtkFileFilter *filter = gtk_file_filter_new();
+  gtk_file_filter_set_name(filter, "Images");
+  gtk_file_filter_add_mime_type(filter, "image/png");
+  gtk_file_filter_add_mime_type(filter, "image/jpeg");
+  gtk_file_filter_add_mime_type(filter, "image/gif");
+  gtk_file_filter_add_mime_type(filter, "image/webp");
+  
+  GListStore *filters = g_list_store_new(GTK_TYPE_FILE_FILTER);
+  g_list_store_append(filters, filter);
+  gtk_file_dialog_set_filters(dialog, G_LIST_MODEL(filters));
+  
+  GtkWindow *window = GTK_WINDOW(gtk_widget_get_root(GTK_WIDGET(btn)));
+  gtk_file_dialog_open(dialog, window, NULL, 
+                      (GAsyncReadyCallback)on_image_selected, aw);
+  
+  g_object_unref(filters);
+  g_object_unref(filter);
+}
+
+/* ---------- Audio Handling (Placeholder) ---------- */
+
+static void on_audio_response(GtkDialog *dialog, gint response_id, gpointer user_data) {
+  (void)response_id;
+  (void)user_data;
+  gtk_window_destroy(GTK_WINDOW(dialog));
+}
+
+static void on_audio_clicked(GtkButton *btn, gpointer user_data) {
+  (void)btn;
+  AppWidgets *aw = (AppWidgets*)user_data;
+  if (!aw) return;
+  
+  // TODO: Implement audio recording/playback
+  GtkWidget *dialog = adw_message_dialog_new(
+      GTK_WINDOW(gtk_widget_get_root(GTK_WIDGET(btn))),
+      "Audio Feature",
+      "Audio recording and playback feature coming soon!"
+  );
+  
+  adw_message_dialog_add_responses(ADW_MESSAGE_DIALOG(dialog),
+      "ok", "OK",
+      NULL);
+  
+  g_signal_connect(dialog, "response", G_CALLBACK(on_audio_response), NULL);
+  gtk_window_present(GTK_WINDOW(dialog));
+}
+
+/* ---------- Conversations List UI ---------- */
+
+static void update_conversations_list(AppWidgets *aw) {
+  if (!aw || !aw->conversations_list) return;
+  
+  GtkWidget *child;
+  while ((child = gtk_widget_get_first_child(GTK_WIDGET(aw->conversations_list)))) {
+      gtk_list_box_remove(aw->conversations_list, child);
+  }
+  
+  for (gint i = aw->conversations->len - 1; i >= 0; i--) {
+      Conversation *conv = g_ptr_array_index(aw->conversations, i);
+      
+      GtkWidget *row = gtk_list_box_row_new();
+      gtk_widget_add_css_class(row, "conversation-item");
+      g_object_set_data(G_OBJECT(row), "conversation", conv);
+      
+      GtkWidget *label = gtk_label_new(conv->title ? conv->title : "New Chat");
+      gtk_widget_set_halign(label, GTK_ALIGN_START);
+      gtk_widget_set_margin_start(label, 16);
+      gtk_widget_set_margin_end(label, 16);
+      gtk_widget_set_margin_top(label, 8);
+      gtk_widget_set_margin_bottom(label, 8);
+      gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
+      
+      gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), label);
+      gtk_list_box_append(aw->conversations_list, row);
+      
+      if (conv == aw->current_conversation) {
+          gtk_list_box_select_row(aw->conversations_list, GTK_LIST_BOX_ROW(row));
+      }
+  }
+}
+
+/* ---------- Theme Management ---------- */
+
+static void apply_theme(AppWidgets *aw, gboolean dark_theme) {
+  GtkCssProvider *css_provider = gtk_css_provider_new();
+  AdwStyleManager *style = adw_style_manager_get_default();
+  adw_style_manager_set_color_scheme(style, dark_theme ? ADW_COLOR_SCHEME_FORCE_DARK : ADW_COLOR_SCHEME_FORCE_LIGHT);
+  
+  if (dark_theme) {
+    gtk_css_provider_load_from_string(css_provider, DARK_CSS);
+  } else {
+    gtk_css_provider_load_from_string(css_provider, LIGHT_CSS);
+  }
+  
+  GdkDisplay *display = gdk_display_get_default();
+  gtk_style_context_add_provider_for_display(
+      display,
+      GTK_STYLE_PROVIDER(css_provider),
+      GTK_STYLE_PROVIDER_PRIORITY_APPLICATION
+  );
+  
+  if (aw->theme_btn) {
+    if (dark_theme) {
+      gtk_button_set_icon_name(GTK_BUTTON(aw->theme_btn), "weather-clear-night-symbolic");
+    } else {
+      gtk_button_set_icon_name(GTK_BUTTON(aw->theme_btn), "weather-clear-symbolic");
+    }
+  }
+  
+  if (aw->chat_box) {
+    gtk_widget_queue_draw(GTK_WIDGET(aw->chat_box));
+  }
+  if (aw->conversations_list) {
+    gtk_widget_queue_draw(GTK_WIDGET(aw->conversations_list));
+  }
+}
+
+static void on_theme_toggled(GtkButton *btn, gpointer user_data) {
+  (void)btn;
+  AppWidgets *aw = (AppWidgets*)user_data;
+  if (!aw) return;
+  
+  aw->dark_theme = !aw->dark_theme;
+  apply_theme(aw, aw->dark_theme);
+  save_theme_preference(aw->dark_theme);
+}
+
+/* ---------- Window destroy ---------- */
 
 static void on_new_chat_clicked(GtkButton *btn, gpointer user_data) {
   (void)btn;
@@ -2015,6 +2066,11 @@ static void on_activate(GApplication *app, gpointer user_data) {
   // Connect text buffer change signal for auto-resize
   GtkTextBuffer *buffer = gtk_text_view_get_buffer(aw->prompt_text_view);
   g_signal_connect(buffer, "changed", G_CALLBACK(on_text_buffer_changed), aw);
+
+  // Controller de teclado: REGISTRAR APÓS aw->prompt_text_view estar definido
+  GtkEventController *key_ctrl = gtk_event_controller_key_new();
+  g_signal_connect(key_ctrl, "key-pressed", G_CALLBACK(on_prompt_key_pressed), aw);
+  gtk_widget_add_controller(GTK_WIDGET(aw->prompt_text_view), key_ctrl);
   
   g_signal_connect(win, "destroy", G_CALLBACK(on_window_destroy), aw);
   
