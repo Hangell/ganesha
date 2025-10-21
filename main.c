@@ -1,6 +1,7 @@
 #include <adwaita.h>
 #include <libsoup/soup.h>
 #include <json-glib/json-glib.h>
+#include <gtksourceview/gtksource.h>
 
 /* ================== Config ================== */
 static const char *OLLAMA_BASE_URL = "http://192.168.0.3:11434";
@@ -13,6 +14,7 @@ static const char *CONVERSATIONS_FILE = "ganesha-conversations.json";
 typedef struct {
   gchar *role;
   gchar *content;
+  GPtrArray *images; // Array de imagens em base64
 } Message;
 
 typedef struct {
@@ -24,11 +26,12 @@ typedef struct {
 
 typedef struct {
   GtkBox        *chat_box;
-  GtkEntry      *prompt_entry;
-  GtkButton     *send_btn;
-  GtkButton     *stop_btn;
+  GtkTextView   *prompt_text_view;
+  GtkScrolledWindow *prompt_scroller;
+  GtkButton     *action_btn;
+  GtkButton     *attach_btn;
+  GtkButton     *audio_btn;
   GtkButton     *new_chat_btn;
-  GtkSpinner    *spinner;
   GtkDropDown   *model_dropdown;
   GtkListBox    *conversations_list;
   GtkScrolledWindow *chat_scroller;
@@ -41,6 +44,7 @@ typedef struct {
   
   GPtrArray     *conversations;
   Conversation  *current_conversation;
+  GPtrArray     *pending_images; // Imagens pendentes para anexar
   
   GtkWidget     *current_assistant_box;
   GtkWidget     *theme_btn;
@@ -96,12 +100,23 @@ static const char *DARK_CSS =
 "  background-color: #1a1f27;"
 "  color: #e6e6e6;"
 "}"
-"entry {"
+"textview {"
 "  background: #0f131a;"
 "  color: #e6e6e6;"
 "  border: 1px solid #232833;"
 "  border-radius: 12px;"
 "  padding: 8px 10px;"
+"  font-size: 14px;"
+"}"
+"textview text {"
+"  background: #0f131a;"
+"  color: #e6e6e6;"
+"}"
+".input-container {"
+"  background: #0f131a;"
+"  border: 1px solid #232833;"
+"  border-radius: 12px;"
+"  padding: 8px;"
 "}"
 "scrollbar slider {"
 "  background: #2a2f38;"
@@ -121,6 +136,15 @@ static const char *DARK_CSS =
 "  border: 1px solid #4a2a2c;"
 "  border-radius: 12px;"
 "}"
+"button.flat {"
+"  background: transparent;"
+"  border: none;"
+"  color: #a0a0a0;"
+"}"
+"button.flat:hover {"
+"  background: #1a1f27;"
+"  color: #e6e6e6;"
+"}"
 "label {"
 "  color: #e6e6e6;"
 "}"
@@ -137,14 +161,16 @@ static const char *DARK_CSS =
 ".loading-dot {"
 "  background-color: #a0a0a0;"
 "  border-radius: 50%;"
-"  animation: bounce 1.4s infinite ease-in-out;"
+"  width: 8px;"
+"  height: 8px;"
+"  animation: blink 1.4s infinite ease-in-out;"
 "}"
-".loading-dot:nth-child(1) { animation-delay: -0.32s; }"
-".loading-dot:nth-child(2) { animation-delay: -0.16s; }"
-".loading-dot:nth-child(3) { animation-delay: 0s; }"
-"@keyframes bounce {"
-"  0%, 80%, 100% { transform: scale(0.8); opacity: 0.5; }"
-"  40% { transform: scale(1.2); opacity: 1; }"
+".loading-dot:nth-child(1) { animation-delay: 0s; }"
+".loading-dot:nth-child(2) { animation-delay: 0.2s; }"
+".loading-dot:nth-child(3) { animation-delay: 0.4s; }"
+"@keyframes blink {"
+"  0%, 100% { opacity: 0.3; transform: scale(0.8); }"
+"  50% { opacity: 1; transform: scale(1.2); }"
 "}"
 ".code-block {"
 "  background-color: #1a1d23;"
@@ -153,6 +179,16 @@ static const char *DARK_CSS =
 "  font-family: 'Monospace', monospace;"
 "  font-size: 12px;"
 "  color: #e0e6f1;"
+"  padding: 12px;"
+"  margin: 8px 0;"
+"}"
+".inline-code {"
+"  background-color: #1a1d23;"
+"  color: #e0e6f1;"
+"  padding: 2px 6px;"
+"  border-radius: 4px;"
+"  font-family: 'Monospace', monospace;"
+"  font-size: 12px;"
 "}"
 ".header-1 {"
 "  font-size: 18px;"
@@ -181,6 +217,26 @@ static const char *DARK_CSS =
 "}"
 ".list-item {"
 "  color: #e0e6f1;"
+"}"
+".blockquote {"
+"  border-left: 3px solid #5b6cff;"
+"  padding-left: 12px;"
+"  margin: 8px 0;"
+"  color: #a0a0a0;"
+"  font-style: italic;"
+"}"
+".image-preview {"
+"  border-radius: 8px;"
+"  border: 1px solid #2a2f38;"
+"  margin: 4px;"
+"  max-width: 200px;"
+"  max-height: 150px;"
+"}"
+".image-container {"
+"  background: #171a21;"
+"  border-radius: 8px;"
+"  padding: 8px;"
+"  margin: 8px 0;"
 "}";
 
 static const char *LIGHT_CSS = 
@@ -230,12 +286,23 @@ static const char *LIGHT_CSS =
 "  background-color: #dee2e6;"
 "  color: #333333;"
 "}"
-"entry {"
+"textview {"
 "  background: #ffffff;"
 "  color: #333333;"
 "  border: 1px solid #ced4da;"
 "  border-radius: 12px;"
 "  padding: 8px 10px;"
+"  font-size: 14px;"
+"}"
+"textview text {"
+"  background: #ffffff;"
+"  color: #333333;"
+"}"
+".input-container {"
+"  background: #ffffff;"
+"  border: 1px solid #ced4da;"
+"  border-radius: 12px;"
+"  padding: 8px;"
 "}"
 "scrollbar slider {"
 "  background: #adb5bd;"
@@ -255,6 +322,15 @@ static const char *LIGHT_CSS =
 "  border: 1px solid #f5c6cb;"
 "  border-radius: 12px;"
 "}"
+"button.flat {"
+"  background: transparent;"
+"  border: none;"
+"  color: #6c757d;"
+"}"
+"button.flat:hover {"
+"  background: #e9ecef;"
+"  color: #333333;"
+"}"
 "label {"
 "  color: #333333;"
 "}"
@@ -271,14 +347,16 @@ static const char *LIGHT_CSS =
 ".loading-dot {"
 "  background-color: #6c757d;"
 "  border-radius: 50%;"
-"  animation: bounce 1.4s infinite ease-in-out;"
+"  width: 8px;"
+"  height: 8px;"
+"  animation: blink 1.4s infinite ease-in-out;"
 "}"
-".loading-dot:nth-child(1) { animation-delay: -0.32s; }"
-".loading-dot:nth-child(2) { animation-delay: -0.16s; }"
-".loading-dot:nth-child(3) { animation-delay: 0s; }"
-"@keyframes bounce {"
-"  0%, 80%, 100% { transform: scale(0.8); opacity: 0.5; }"
-"  40% { transform: scale(1.2); opacity: 1; }"
+".loading-dot:nth-child(1) { animation-delay: 0s; }"
+".loading-dot:nth-child(2) { animation-delay: 0.2s; }"
+".loading-dot:nth-child(3) { animation-delay: 0.4s; }"
+"@keyframes blink {"
+"  0%, 100% { opacity: 0.3; transform: scale(0.8); }"
+"  50% { opacity: 1; transform: scale(1.2); }"
 "}"
 ".code-block {"
 "  background-color: #f8f9fa;"
@@ -287,6 +365,16 @@ static const char *LIGHT_CSS =
 "  font-family: 'Monospace', monospace;"
 "  font-size: 12px;"
 "  color: #333333;"
+"  padding: 12px;"
+"  margin: 8px 0;"
+"}"
+".inline-code {"
+"  background-color: #f8f9fa;"
+"  color: #333333;"
+"  padding: 2px 6px;"
+"  border-radius: 4px;"
+"  font-family: 'Monospace', monospace;"
+"  font-size: 12px;"
 "}"
 ".header-1 {"
 "  font-size: 18px;"
@@ -315,6 +403,26 @@ static const char *LIGHT_CSS =
 "}"
 ".list-item {"
 "  color: #333333;"
+"}"
+".blockquote {"
+"  border-left: 3px solid #667eea;"
+"  padding-left: 12px;"
+"  margin: 8px 0;"
+"  color: #6c757d;"
+"  font-style: italic;"
+"}"
+".image-preview {"
+"  border-radius: 8px;"
+"  border: 1px solid #e9ecef;"
+"  margin: 4px;"
+"  max-width: 200px;"
+"  max-height: 150px;"
+"}"
+".image-container {"
+"  background: #f8f9fa;"
+"  border-radius: 8px;"
+"  padding: 8px;"
+"  margin: 8px 0;"
 "}";
 
 /* ---------- Message/Conversation helpers ---------- */
@@ -323,6 +431,7 @@ static Message* message_new(const gchar *role, const gchar *content) {
   Message *msg = g_new0(Message, 1);
   msg->role = g_strdup(role);
   msg->content = g_strdup(content);
+  msg->images = g_ptr_array_new_with_free_func(g_free);
   return msg;
 }
 
@@ -330,6 +439,7 @@ static void message_free(Message *msg) {
   if (!msg) return;
   g_free(msg->role);
   g_free(msg->content);
+  if (msg->images) g_ptr_array_unref(msg->images);
   g_free(msg);
 }
 
@@ -409,6 +519,18 @@ static void save_conversations(AppWidgets *aw) {
           json_builder_add_string_value(builder, msg->role);
           json_builder_set_member_name(builder, "content");
           json_builder_add_string_value(builder, msg->content);
+          
+          // Save images if present
+          if (msg->images && msg->images->len > 0) {
+              json_builder_set_member_name(builder, "images");
+              json_builder_begin_array(builder);
+              for (guint k = 0; k < msg->images->len; k++) {
+                  const gchar *img = g_ptr_array_index(msg->images, k);
+                  json_builder_add_string_value(builder, img);
+              }
+              json_builder_end_array(builder);
+          }
+          
           json_builder_end_object(builder);
       }
       
@@ -492,6 +614,17 @@ static void load_conversations(AppWidgets *aw) {
               json_object_get_string_member(msg_obj, "role"),
               json_object_get_string_member(msg_obj, "content")
           );
+          
+          // Load images if present
+          if (json_object_has_member(msg_obj, "images")) {
+              JsonArray *imgs_array = json_object_get_array_member(msg_obj, "images");
+              guint imgs_len = json_array_get_length(imgs_array);
+              for (guint k = 0; k < imgs_len; k++) {
+                  const gchar *img = json_array_get_string_element(imgs_array, k);
+                  g_ptr_array_add(msg->images, g_strdup(img));
+              }
+          }
+          
           g_ptr_array_add(conv->messages, msg);
       }
       
@@ -541,33 +674,65 @@ static gchar* load_preferred_model(void) {
 static void save_preferred_model(const gchar *model) {
   if (!model) return;
   
+  gchar *path = get_prefs_path();
+  gchar *contents = NULL;
+  JsonParser *parser = json_parser_new();
+  JsonNode *root = NULL;
+  
+  // Load existing preferences
+  if (g_file_get_contents(path, &contents, NULL, NULL)) {
+      if (json_parser_load_from_data(parser, contents, -1, NULL)) {
+          root = json_parser_get_root(parser);
+          if (root) json_node_ref(root);
+      }
+      g_free(contents);
+  }
+  
   JsonBuilder *builder = json_builder_new();
   json_builder_begin_object(builder);
+  
+  // Copy existing preferences
+  if (root && JSON_NODE_HOLDS_OBJECT(root)) {
+      JsonObject *obj = json_node_get_object(root);
+      GList *members = json_object_get_members(obj);
+      for (GList *l = members; l; l = l->next) {
+          const gchar *key = l->data;
+          if (g_strcmp0(key, "preferred_model") != 0) {
+              json_builder_set_member_name(builder, key);
+              JsonNode *value = json_object_get_member(obj, key);
+              json_builder_add_value(builder, value);
+          }
+      }
+      g_list_free(members);
+  }
+  
+  // Add model preference
   json_builder_set_member_name(builder, "preferred_model");
   json_builder_add_string_value(builder, model);
+  
   json_builder_end_object(builder);
   
   JsonGenerator *gen = json_generator_new();
   json_generator_set_pretty(gen, TRUE);
-  JsonNode *root = json_builder_get_root(builder);
-  json_generator_set_root(gen, root);
+  JsonNode *new_root = json_builder_get_root(builder);
+  json_generator_set_root(gen, new_root);
   
   gchar *json_data = json_generator_to_data(gen, NULL);
-  gchar *path = get_prefs_path();
-  
   g_file_set_contents(path, json_data, -1, NULL);
   
   g_free(json_data);
   g_free(path);
-  json_node_free(root);
+  if (root) json_node_unref(root);
+  json_node_free(new_root);
   g_object_unref(gen);
   g_object_unref(builder);
+  g_object_unref(parser);
 }
 
 static gboolean load_theme_preference(void) {
   gchar *path = get_prefs_path();
   gchar *contents = NULL;
-  gboolean dark_theme = TRUE; // Default to dark theme
+  gboolean dark_theme = TRUE;
   
   if (g_file_get_contents(path, &contents, NULL, NULL)) {
       JsonParser *parser = json_parser_new();
@@ -655,7 +820,6 @@ static GtkWidget* create_loading_bubble(void) {
   GtkWidget *loading_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
   gtk_widget_set_halign(loading_box, GTK_ALIGN_START);
   
-  // Create 3 bouncing dots
   for (int i = 0; i < 3; i++) {
     GtkWidget *dot = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_widget_set_size_request(dot, 8, 8);
@@ -667,7 +831,7 @@ static GtkWidget* create_loading_bubble(void) {
   return bubble;
 }
 
-/* ---------- Markdown Parsing ---------- */
+/* ---------- Enhanced Markdown Parsing ---------- */
 
 static GtkWidget* parse_markdown(const gchar *text) {
   GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
@@ -675,7 +839,9 @@ static GtkWidget* parse_markdown(const gchar *text) {
   
   gboolean in_code_block = FALSE;
   GString *code_block_content = NULL;
-  GtkWidget *code_label = NULL;
+  gchar *code_language = NULL;
+  GtkWidget *code_scroll = NULL;
+  GtkWidget *code_view = NULL;
   
   for (gchar **line = lines; *line; line++) {
     gchar *trimmed = g_strstrip(g_strdup(*line));
@@ -683,27 +849,36 @@ static GtkWidget* parse_markdown(const gchar *text) {
     // Code blocks
     if (g_str_has_prefix(trimmed, "```")) {
       if (!in_code_block) {
-        // Start code block
         in_code_block = TRUE;
         code_block_content = g_string_new("");
-        code_label = gtk_label_new("");
-        gtk_label_set_wrap(GTK_LABEL(code_label), TRUE);
-        gtk_label_set_wrap_mode(GTK_LABEL(code_label), PANGO_WRAP_WORD_CHAR);
-        gtk_label_set_xalign(GTK_LABEL(code_label), 0.0);
-        gtk_label_set_selectable(GTK_LABEL(code_label), TRUE);
-        gtk_widget_add_css_class(code_label, "code-block");
-        gtk_widget_set_margin_top(code_label, 8);
-        gtk_widget_set_margin_bottom(code_label, 8);
-        gtk_widget_set_margin_start(code_label, 12);
-        gtk_widget_set_margin_end(code_label, 12);
+        code_language = g_strdup(trimmed + 3);
+        
+        // Create scrollable code block
+        code_scroll = gtk_scrolled_window_new();
+        gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(code_scroll),
+                                      GTK_POLICY_AUTOMATIC,
+                                      GTK_POLICY_AUTOMATIC);
+        gtk_widget_set_size_request(code_scroll, -1, 200);
+        
+        code_view = gtk_text_view_new();
+        gtk_text_view_set_editable(GTK_TEXT_VIEW(code_view), FALSE);
+        gtk_text_view_set_monospace(GTK_TEXT_VIEW(code_view), TRUE);
+        gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(code_view), GTK_WRAP_NONE);
+        gtk_widget_add_css_class(code_view, "code-block");
+        gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(code_scroll), code_view);
       } else {
-        // End code block
         in_code_block = FALSE;
-        gtk_label_set_text(GTK_LABEL(code_label), code_block_content->str);
-        gtk_box_append(GTK_BOX(box), code_label);
+        
+        GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(code_view));
+        gtk_text_buffer_set_text(buffer, code_block_content->str, -1);
+        gtk_box_append(GTK_BOX(box), code_scroll);
+        
         g_string_free(code_block_content, TRUE);
+        g_free(code_language);
         code_block_content = NULL;
+        code_language = NULL;
       }
+      g_free(trimmed);
       continue;
     }
     
@@ -712,6 +887,35 @@ static GtkWidget* parse_markdown(const gchar *text) {
         g_string_append(code_block_content, "\n");
       }
       g_string_append(code_block_content, trimmed);
+      g_free(trimmed);
+      continue;
+    }
+    
+    // Inline code
+    if (g_strrstr(trimmed, "`")) {
+      GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+      gchar **parts = g_strsplit(trimmed, "`", -1);
+      gboolean is_code = FALSE;
+      
+      for (gchar **part = parts; *part; part++) {
+        if (**part) {
+          GtkWidget *label = gtk_label_new(*part);
+          gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+          gtk_label_set_selectable(GTK_LABEL(label), TRUE);
+          
+          if (is_code) {
+            gtk_widget_add_css_class(label, "inline-code");
+          } else {
+            gtk_widget_add_css_class(label, "message-content");
+          }
+          gtk_box_append(GTK_BOX(hbox), label);
+        }
+        is_code = !is_code;
+      }
+      
+      g_strfreev(parts);
+      gtk_box_append(GTK_BOX(box), hbox);
+      g_free(trimmed);
       continue;
     }
     
@@ -719,33 +923,46 @@ static GtkWidget* parse_markdown(const gchar *text) {
     if (g_str_has_prefix(trimmed, "# ")) {
       GtkWidget *label = gtk_label_new(trimmed + 2);
       gtk_label_set_wrap(GTK_LABEL(label), TRUE);
-      gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
       gtk_label_set_xalign(GTK_LABEL(label), 0.0);
       gtk_label_set_selectable(GTK_LABEL(label), TRUE);
       gtk_widget_add_css_class(label, "header-1");
       gtk_box_append(GTK_BOX(box), label);
+      g_free(trimmed);
       continue;
     }
     
     if (g_str_has_prefix(trimmed, "## ")) {
       GtkWidget *label = gtk_label_new(trimmed + 3);
       gtk_label_set_wrap(GTK_LABEL(label), TRUE);
-      gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
       gtk_label_set_xalign(GTK_LABEL(label), 0.0);
       gtk_label_set_selectable(GTK_LABEL(label), TRUE);
       gtk_widget_add_css_class(label, "header-2");
       gtk_box_append(GTK_BOX(box), label);
+      g_free(trimmed);
       continue;
     }
     
     if (g_str_has_prefix(trimmed, "### ")) {
       GtkWidget *label = gtk_label_new(trimmed + 4);
       gtk_label_set_wrap(GTK_LABEL(label), TRUE);
-      gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
       gtk_label_set_xalign(GTK_LABEL(label), 0.0);
       gtk_label_set_selectable(GTK_LABEL(label), TRUE);
       gtk_widget_add_css_class(label, "header-3");
       gtk_box_append(GTK_BOX(box), label);
+      g_free(trimmed);
+      continue;
+    }
+    
+    // Blockquotes
+    if (g_str_has_prefix(trimmed, "> ")) {
+      GtkWidget *label = gtk_label_new(trimmed + 2);
+      gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+      gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+      gtk_label_set_selectable(GTK_LABEL(label), TRUE);
+      gtk_widget_add_css_class(label, "blockquote");
+      gtk_widget_set_margin_start(label, 12);
+      gtk_box_append(GTK_BOX(box), label);
+      g_free(trimmed);
       continue;
     }
     
@@ -758,14 +975,41 @@ static GtkWidget* parse_markdown(const gchar *text) {
       
       GtkWidget *label = gtk_label_new(trimmed + 2);
       gtk_label_set_wrap(GTK_LABEL(label), TRUE);
-      gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
       gtk_label_set_xalign(GTK_LABEL(label), 0.0);
       gtk_label_set_selectable(GTK_LABEL(label), TRUE);
+      gtk_widget_set_hexpand(label, TRUE);
       gtk_widget_add_css_class(label, "list-item");
       gtk_box_append(GTK_BOX(hbox), label);
       
       gtk_box_append(GTK_BOX(box), hbox);
+      g_free(trimmed);
       continue;
+    }
+    
+    // Numbered lists
+    if (g_ascii_isdigit(*trimmed)) {
+      const gchar *dot = strchr(trimmed, '.');
+      if (dot && *(dot+1) == ' ') {
+        GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        
+        gchar *number = g_strndup(trimmed, dot - trimmed + 1);
+        GtkWidget *num_label = gtk_label_new(number);
+        gtk_widget_add_css_class(num_label, "list-bullet");
+        gtk_box_append(GTK_BOX(hbox), num_label);
+        g_free(number);
+        
+        GtkWidget *label = gtk_label_new(dot + 2);
+        gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+        gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+        gtk_label_set_selectable(GTK_LABEL(label), TRUE);
+        gtk_widget_set_hexpand(label, TRUE);
+        gtk_widget_add_css_class(label, "list-item");
+        gtk_box_append(GTK_BOX(hbox), label);
+        
+        gtk_box_append(GTK_BOX(box), hbox);
+        g_free(trimmed);
+        continue;
+      }
     }
     
     // Regular text
@@ -778,7 +1022,6 @@ static GtkWidget* parse_markdown(const gchar *text) {
       gtk_widget_add_css_class(label, "message-content");
       gtk_box_append(GTK_BOX(box), label);
     } else {
-      // Empty line for spacing
       GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
       gtk_widget_set_size_request(spacer, -1, 8);
       gtk_box_append(GTK_BOX(box), spacer);
@@ -787,11 +1030,13 @@ static GtkWidget* parse_markdown(const gchar *text) {
     g_free(trimmed);
   }
   
-  // Handle case where code block isn't properly closed
+  // Handle unclosed code block
   if (in_code_block && code_block_content) {
-    gtk_label_set_text(GTK_LABEL(code_label), code_block_content->str);
-    gtk_box_append(GTK_BOX(box), code_label);
+    GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(code_view));
+    gtk_text_buffer_set_text(buffer, code_block_content->str, -1);
+    gtk_box_append(GTK_BOX(box), code_scroll);
     g_string_free(code_block_content, TRUE);
+    g_free(code_language);
   }
   
   g_strfreev(lines);
@@ -810,7 +1055,6 @@ static GtkWidget* create_message_bubble(const gchar *role, const gchar *content)
       gtk_widget_set_halign(bubble, GTK_ALIGN_START);
   }
   
-  // Parse markdown for assistant messages
   if (g_strcmp0(role, "assistant") == 0 && content && *content) {
     GtkWidget *content_box = parse_markdown(content);
     gtk_box_append(GTK_BOX(bubble), content_box);
@@ -833,7 +1077,6 @@ static void append_message_bubble(AppWidgets *aw, const gchar *role, const gchar
   GtkWidget *bubble = create_message_bubble(role, content);
   gtk_box_append(aw->chat_box, bubble);
   
-  // Auto-scroll to bottom
   GtkAdjustment *vadj = gtk_scrolled_window_get_vadjustment(aw->chat_scroller);
   gtk_adjustment_set_value(vadj, gtk_adjustment_get_upper(vadj));
 }
@@ -858,25 +1101,40 @@ static void display_conversation(AppWidgets *aw, Conversation *conv) {
   }
 }
 
+static void update_action_button(AppWidgets *aw) {
+  if (!aw || !aw->action_btn) return;
+  
+  if (aw->in_progress) {
+    gtk_button_set_label(aw->action_btn, "⏹ Stop");
+    gtk_widget_remove_css_class(GTK_WIDGET(aw->action_btn), "suggested-action");
+    gtk_widget_add_css_class(GTK_WIDGET(aw->action_btn), "destructive-action");
+  } else {
+    gtk_button_set_label(aw->action_btn, "⬆ Send");
+    gtk_widget_remove_css_class(GTK_WIDGET(aw->action_btn), "destructive-action");
+    gtk_widget_add_css_class(GTK_WIDGET(aw->action_btn), "suggested-action");
+  }
+}
+
 static void set_streaming_state(AppWidgets *aw, gboolean running) {
   if (!aw || !aw->alive) return;
   aw->in_progress = running;
-  if (aw->send_btn) gtk_widget_set_sensitive(GTK_WIDGET(aw->send_btn), !running);
-  if (aw->stop_btn) gtk_widget_set_sensitive(GTK_WIDGET(aw->stop_btn),  running);
-  if (aw->prompt_entry) gtk_widget_set_sensitive(GTK_WIDGET(aw->prompt_entry), !running);
-  if (aw->model_dropdown) gtk_widget_set_sensitive(GTK_WIDGET(aw->model_dropdown), !running);
-  if (aw->new_chat_btn) gtk_widget_set_sensitive(GTK_WIDGET(aw->new_chat_btn), !running);
   
-  if (aw->spinner) {
-      if (running) {
-          gtk_spinner_start(aw->spinner);
-          gtk_widget_set_visible(GTK_WIDGET(aw->spinner), TRUE);
-      } else {
-          gtk_spinner_stop(aw->spinner);
-          gtk_widget_set_visible(GTK_WIDGET(aw->spinner), FALSE);
-      }
-  }
+  if (aw->prompt_text_view) 
+    gtk_widget_set_sensitive(GTK_WIDGET(aw->prompt_text_view), !running);
+  if (aw->model_dropdown) 
+    gtk_widget_set_sensitive(GTK_WIDGET(aw->model_dropdown), !running);
+  if (aw->new_chat_btn) 
+    gtk_widget_set_sensitive(GTK_WIDGET(aw->new_chat_btn), !running);
+  if (aw->attach_btn)
+    gtk_widget_set_sensitive(GTK_WIDGET(aw->attach_btn), !running);
+  if (aw->audio_btn)
+    gtk_widget_set_sensitive(GTK_WIDGET(aw->audio_btn), !running);
+  
+  update_action_button(aw);
 }
+
+/* --------- Key press Enter Send Msg -------- */
+
 
 /* ---------- Conversations List UI ---------- */
 
@@ -915,7 +1173,6 @@ static void update_conversations_list(AppWidgets *aw) {
 /* ---------- Theme Management ---------- */
 
 static void apply_theme(AppWidgets *aw, gboolean dark_theme) {
-  // Create new provider
   GtkCssProvider *css_provider = gtk_css_provider_new();
   AdwStyleManager *style = adw_style_manager_get_default();
   adw_style_manager_set_color_scheme(style, dark_theme ? ADW_COLOR_SCHEME_FORCE_DARK : ADW_COLOR_SCHEME_FORCE_LIGHT);
@@ -927,22 +1184,12 @@ static void apply_theme(AppWidgets *aw, gboolean dark_theme) {
   }
   
   GdkDisplay *display = gdk_display_get_default();
-  
-  // Simple approach: just add the new provider
-  // GTK will handle the rest automatically
   gtk_style_context_add_provider_for_display(
       display,
       GTK_STYLE_PROVIDER(css_provider),
       GTK_STYLE_PROVIDER_PRIORITY_APPLICATION
   );
   
-  // Force refresh of all widgets by toggling classes
-  if (aw->chat_scroller) {
-    gtk_widget_remove_css_class(GTK_WIDGET(aw->chat_scroller), "chat-container");
-    gtk_widget_add_css_class(GTK_WIDGET(aw->chat_scroller), "chat-container");
-  }
-  
-  // Update theme button icon
   if (aw->theme_btn) {
     if (dark_theme) {
       gtk_button_set_icon_name(GTK_BUTTON(aw->theme_btn), "weather-clear-night-symbolic");
@@ -951,7 +1198,6 @@ static void apply_theme(AppWidgets *aw, gboolean dark_theme) {
     }
   }
   
-  // Force redraw of the entire window
   if (aw->chat_box) {
     gtk_widget_queue_draw(GTK_WIDGET(aw->chat_box));
   }
@@ -970,7 +1216,109 @@ static void on_theme_toggled(GtkButton *btn, gpointer user_data) {
   save_theme_preference(aw->dark_theme);
 }
 
-/* ---------- callbacks postados no main loop ---------- */
+/* ---------- Image Handling ---------- */
+
+static gchar* image_to_base64(const gchar *filepath) {
+  gchar *contents = NULL;
+  gsize length = 0;
+  
+  if (!g_file_get_contents(filepath, &contents, &length, NULL)) {
+    return NULL;
+  }
+  
+  gchar *base64 = g_base64_encode((const guchar*)contents, length);
+  g_free(contents);
+  return base64;
+}
+
+static void on_image_selected(GtkFileDialog *dialog, GAsyncResult *result, gpointer user_data) {
+  AppWidgets *aw = (AppWidgets*)user_data;
+  GError *error = NULL;
+  
+  GFile *file = gtk_file_dialog_open_finish(dialog, result, &error);
+  if (error) {
+    g_error_free(error);
+    return;
+  }
+  
+  if (!file) return;
+  
+  gchar *filepath = g_file_get_path(file);
+  gchar *base64 = image_to_base64(filepath);
+  
+  if (base64) {
+    g_ptr_array_add(aw->pending_images, base64);
+    
+    // Show image preview in input area
+    GtkTextBuffer *buffer = gtk_text_view_get_buffer(aw->prompt_text_view);
+    GtkTextIter end;
+    gtk_text_buffer_get_end_iter(buffer, &end);
+    
+    gchar *markup = g_strdup_printf("\n[Image: %s attached]\n", g_path_get_basename(filepath));
+    gtk_text_buffer_insert(buffer, &end, markup, -1);
+    g_free(markup);
+  }
+  
+  g_free(filepath);
+  g_object_unref(file);
+}
+
+static void on_attach_clicked(GtkButton *btn, gpointer user_data) {
+  (void)btn;
+  AppWidgets *aw = (AppWidgets*)user_data;
+  if (!aw) return;
+  
+  GtkFileDialog *dialog = gtk_file_dialog_new();
+  gtk_file_dialog_set_title(dialog, "Select Image");
+  
+  GtkFileFilter *filter = gtk_file_filter_new();
+  gtk_file_filter_set_name(filter, "Images");
+  gtk_file_filter_add_mime_type(filter, "image/png");
+  gtk_file_filter_add_mime_type(filter, "image/jpeg");
+  gtk_file_filter_add_mime_type(filter, "image/gif");
+  gtk_file_filter_add_mime_type(filter, "image/webp");
+  
+  GListStore *filters = g_list_store_new(GTK_TYPE_FILE_FILTER);
+  g_list_store_append(filters, filter);
+  gtk_file_dialog_set_filters(dialog, G_LIST_MODEL(filters));
+  
+  GtkWindow *window = GTK_WINDOW(gtk_widget_get_root(GTK_WIDGET(btn)));
+  gtk_file_dialog_open(dialog, window, NULL, 
+                      (GAsyncReadyCallback)on_image_selected, aw);
+  
+  g_object_unref(filters);
+  g_object_unref(filter);
+}
+
+/* ---------- Audio Handling (Placeholder) ---------- */
+
+static void on_audio_response(GtkDialog *dialog, gint response_id, gpointer user_data) {
+  (void)response_id;
+  (void)user_data;
+  gtk_window_destroy(GTK_WINDOW(dialog));
+}
+
+static void on_audio_clicked(GtkButton *btn, gpointer user_data) {
+  (void)btn;
+  AppWidgets *aw = (AppWidgets*)user_data;
+  if (!aw) return;
+  
+  // TODO: Implement audio recording/playback
+  GtkWidget *dialog = adw_message_dialog_new(
+      GTK_WINDOW(gtk_widget_get_root(GTK_WIDGET(btn))),
+      "Audio Feature",
+      "Audio recording and playback feature coming soon!"
+  );
+  
+  adw_message_dialog_add_responses(ADW_MESSAGE_DIALOG(dialog),
+      "ok", "OK",
+      NULL);
+  
+  g_signal_connect(dialog, "response", G_CALLBACK(on_audio_response), NULL);
+  gtk_window_present(GTK_WINDOW(dialog));
+}
+
+/* ---------- Callback postados no main loop ---------- */
 
 typedef struct {
   AppWidgets *aw;
@@ -980,19 +1328,14 @@ typedef struct {
 static gboolean ui_append_chunk_cb(gpointer data) {
   AppendChunkData *d = (AppendChunkData*)data;
   if (d->aw && d->aw->alive && d->aw->current_assistant_box) {
-      // Check if this is the first chunk and we have a loading bubble
       GtkWidget *first_child = gtk_widget_get_first_child(d->aw->current_assistant_box);
-      if (first_child && gtk_widget_get_css_classes(first_child) && 
-          gtk_widget_has_css_class(first_child, "loading-dot")) {
-          // Replace loading bubble with content bubble
+      if (first_child && gtk_widget_has_css_class(first_child, "loading-dot")) {
           GtkWidget *new_bubble = create_message_bubble("assistant", d->chunk);
           gtk_widget_set_hexpand(new_bubble, TRUE);
           
-          // Get parent and find position
           GtkWidget *parent = gtk_widget_get_parent(d->aw->current_assistant_box);
           GtkWidget *prev_sibling = gtk_widget_get_prev_sibling(d->aw->current_assistant_box);
           
-          // Remove loading bubble and add content bubble
           gtk_box_remove(GTK_BOX(parent), d->aw->current_assistant_box);
           if (prev_sibling) {
               gtk_box_insert_child_after(GTK_BOX(parent), new_bubble, prev_sibling);
@@ -1002,50 +1345,26 @@ static gboolean ui_append_chunk_cb(gpointer data) {
           
           d->aw->current_assistant_box = new_bubble;
       } else {
-          // Append to existing content
-          GtkWidget *child = gtk_widget_get_first_child(d->aw->current_assistant_box);
-          if (GTK_IS_BOX(child)) {
-              // This is a markdown box, we need to handle this differently
-              // For simplicity, let's recreate the bubble with accumulated content
-              if (d->aw->current_conversation && d->aw->current_conversation->messages->len > 0) {
-                  Message *last_msg = g_ptr_array_index(d->aw->current_conversation->messages, 
-                                                      d->aw->current_conversation->messages->len - 1);
-                  if (g_strcmp0(last_msg->role, "assistant") == 0) {
-                      gchar *new_content = g_strconcat(last_msg->content, d->chunk, NULL);
-                      
-                      // Replace the bubble
-                      GtkWidget *parent = gtk_widget_get_parent(d->aw->current_assistant_box);
-                      GtkWidget *prev_sibling = gtk_widget_get_prev_sibling(d->aw->current_assistant_box);
-                      
-                      GtkWidget *new_bubble = create_message_bubble("assistant", new_content);
-                      gtk_box_remove(GTK_BOX(parent), d->aw->current_assistant_box);
-                      if (prev_sibling) {
-                          gtk_box_insert_child_after(GTK_BOX(parent), new_bubble, prev_sibling);
-                      } else {
-                          gtk_box_prepend(GTK_BOX(parent), new_bubble);
-                      }
-                      
-                      d->aw->current_assistant_box = new_bubble;
-                      g_free(last_msg->content);
-                      last_msg->content = new_content;
+          if (d->aw->current_conversation && d->aw->current_conversation->messages->len > 0) {
+              Message *last_msg = g_ptr_array_index(d->aw->current_conversation->messages, 
+                                                  d->aw->current_conversation->messages->len - 1);
+              if (g_strcmp0(last_msg->role, "assistant") == 0) {
+                  gchar *new_content = g_strconcat(last_msg->content, d->chunk, NULL);
+                  
+                  GtkWidget *parent = gtk_widget_get_parent(d->aw->current_assistant_box);
+                  GtkWidget *prev_sibling = gtk_widget_get_prev_sibling(d->aw->current_assistant_box);
+                  
+                  GtkWidget *new_bubble = create_message_bubble("assistant", new_content);
+                  gtk_box_remove(GTK_BOX(parent), d->aw->current_assistant_box);
+                  if (prev_sibling) {
+                      gtk_box_insert_child_after(GTK_BOX(parent), new_bubble, prev_sibling);
+                  } else {
+                      gtk_box_prepend(GTK_BOX(parent), new_bubble);
                   }
-              }
-          } else if (GTK_IS_LABEL(child)) {
-              // Simple label - just append text
-              const gchar *current = gtk_label_get_text(GTK_LABEL(child));
-              gchar *new_text = g_strconcat(current, d->chunk, NULL);
-              gtk_label_set_text(GTK_LABEL(child), new_text);
-              g_free(new_text);
-              
-              // Update conversation
-              if (d->aw->current_conversation && d->aw->current_conversation->messages->len > 0) {
-                  Message *last_msg = g_ptr_array_index(d->aw->current_conversation->messages, 
-                                                      d->aw->current_conversation->messages->len - 1);
-                  if (g_strcmp0(last_msg->role, "assistant") == 0) {
-                      gchar *new_content = g_strconcat(last_msg->content, d->chunk, NULL);
-                      g_free(last_msg->content);
-                      last_msg->content = new_content;
-                  }
+                  
+                  d->aw->current_assistant_box = new_bubble;
+                  g_free(last_msg->content);
+                  last_msg->content = new_content;
               }
           }
       }
@@ -1069,7 +1388,6 @@ static gboolean ui_append_assistant_prefix_cb(gpointer data) {
           conversation_add_message(aw->current_conversation, "assistant", "");
       }
       
-      // Auto-scroll to bottom
       GtkAdjustment *vadj = gtk_scrolled_window_get_vadjustment(aw->chat_scroller);
       gtk_adjustment_set_value(vadj, gtk_adjustment_get_upper(vadj));
   }
@@ -1214,6 +1532,18 @@ static gchar *build_ollama_chat_body(const char *model, Conversation *conv) {
       json_builder_add_string_value(b, msg->role);
       json_builder_set_member_name(b, "content");
       json_builder_add_string_value(b, msg->content);
+      
+      // Add images if present
+      if (msg->images && msg->images->len > 0) {
+          json_builder_set_member_name(b, "images");
+          json_builder_begin_array(b);
+          for (guint j = 0; j < msg->images->len; j++) {
+              const gchar *img = g_ptr_array_index(msg->images, j);
+              json_builder_add_string_value(b, img);
+          }
+          json_builder_end_array(b);
+      }
+      
       json_builder_end_object(b);
   }
   
@@ -1343,7 +1673,30 @@ static void start_ollama_stream(AppWidgets *aw, const char *user_text) {
       g_ptr_array_add(aw->conversations, aw->current_conversation);
   }
   
-  conversation_add_message(aw->current_conversation, "user", user_text);
+  Message *msg = message_new("user", user_text);
+  
+  // Add pending images
+  if (aw->pending_images && aw->pending_images->len > 0) {
+      for (guint i = 0; i < aw->pending_images->len; i++) {
+          gchar *img = g_ptr_array_index(aw->pending_images, i);
+          g_ptr_array_add(msg->images, g_strdup(img));
+      }
+      g_ptr_array_remove_range(aw->pending_images, 0, aw->pending_images->len);
+  }
+  
+  g_ptr_array_add(aw->current_conversation->messages, msg);
+  
+  if (!aw->current_conversation->title) {
+      gchar *title = g_strdup(user_text);
+      if (strlen(title) > 50) {
+          title[47] = '.';
+          title[48] = '.';
+          title[49] = '.';
+          title[50] = '\0';
+      }
+      aw->current_conversation->title = title;
+  }
+  
   append_message_bubble(aw, "user", user_text);
   
   if (aw->cancellable) g_clear_object(&aw->cancellable);
@@ -1356,27 +1709,28 @@ static void start_ollama_stream(AppWidgets *aw, const char *user_text) {
   g_thread_new("ganesha-ollama", ollama_stream_worker, args);
 }
 
-static void on_send_clicked(GtkButton *btn, gpointer user_data) {
+static void on_action_btn_clicked(GtkButton *btn, gpointer user_data) {
   (void)btn;
   AppWidgets *aw = (AppWidgets*)user_data;
   if (!aw || !aw->alive) return;
-  const char *txt = gtk_editable_get_text(GTK_EDITABLE(aw->prompt_entry));
-  if (txt && *txt) {
-      start_ollama_stream(aw, txt);
-      gtk_editable_set_text(GTK_EDITABLE(aw->prompt_entry), "");
-  }
-}
-
-static void on_entry_activate(GtkEntry *entry, gpointer user_data) {
-  (void)entry;
-  on_send_clicked(NULL, user_data);
-}
-
-static void on_stop_clicked(GtkButton *btn, gpointer user_data) {
-  (void)btn;
-  AppWidgets *aw = (AppWidgets*)user_data;
-  if (aw && aw->in_progress && aw->cancellable) {
-      g_cancellable_cancel(aw->cancellable);
+  
+  if (aw->in_progress) {
+      // Stop generation
+      if (aw->cancellable) {
+          g_cancellable_cancel(aw->cancellable);
+      }
+  } else {
+      // Send message
+      GtkTextBuffer *buffer = gtk_text_view_get_buffer(aw->prompt_text_view);
+      GtkTextIter start, end;
+      gtk_text_buffer_get_bounds(buffer, &start, &end);
+      gchar *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE);
+      
+      if (text && *text) {
+          start_ollama_stream(aw, text);
+          gtk_text_buffer_set_text(buffer, "", -1);
+      }
+      g_free(text);
   }
 }
 
@@ -1389,9 +1743,7 @@ static void on_new_chat_clicked(GtkButton *btn, gpointer user_data) {
   g_ptr_array_add(aw->conversations, aw->current_conversation);
   
   clear_chat_display(aw);
-  
   update_conversations_list(aw);
-  
   save_conversations(aw);
 }
 
@@ -1434,7 +1786,31 @@ static void on_window_destroy(GtkWidget *w, gpointer user_data) {
       g_ptr_array_unref(aw->conversations);
   }
   
+  if (aw->pending_images) {
+      g_ptr_array_unref(aw->pending_images);
+  }
+  
   g_free(aw->selected_model);
+}
+
+/* ---------- Text View Auto-resize ---------- */
+
+static void on_text_buffer_changed(GtkTextBuffer *buffer, gpointer user_data) {
+  AppWidgets *aw = (AppWidgets*)user_data;
+  if (!aw || !aw->prompt_scroller) return;
+  
+  GtkTextIter start, end;
+  gtk_text_buffer_get_bounds(buffer, &start, &end);
+  gint line_count = gtk_text_iter_get_line(&end) + 1;
+  
+  // Adjust height based on line count
+  if (line_count <= 3) {
+    gtk_scrolled_window_set_max_content_height(aw->prompt_scroller, 120);
+  } else if (line_count <= 6) {
+    gtk_scrolled_window_set_max_content_height(aw->prompt_scroller, 200);
+  } else {
+    gtk_scrolled_window_set_max_content_height(aw->prompt_scroller, 300);
+  }
 }
 
 /* ---------- bootstrap ---------- */
@@ -1463,22 +1839,20 @@ static void on_activate(GApplication *app, gpointer user_data) {
   
   GtkWidget *paned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
   
-  // Sidebar with centered header
+  // Sidebar
   GtkWidget *sidebar = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
   gtk_widget_set_size_request(sidebar, 250, -1);
   
-  // Sidebar header with centered title and button
+  // Sidebar header
   GtkWidget *sidebar_header = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
   gtk_widget_add_css_class(sidebar_header, "sidebar-header");
   
-  // Conversations title - centered
   GtkWidget *conversations_title = gtk_label_new("Conversations");
   gtk_widget_add_css_class(conversations_title, "title-4");
   gtk_widget_set_halign(conversations_title, GTK_ALIGN_CENTER);
   gtk_widget_set_margin_top(conversations_title, 12);
   gtk_widget_set_margin_bottom(conversations_title, 8);
   
-  // New Chat button - centered
   GtkWidget *new_chat_btn = gtk_button_new_with_label("+ New Chat");
   gtk_widget_add_css_class(new_chat_btn, "suggested-action");
   gtk_widget_set_halign(new_chat_btn, GTK_ALIGN_CENTER);
@@ -1503,6 +1877,7 @@ static void on_activate(GApplication *app, gpointer user_data) {
   // Main content area
   GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
   
+  // Model selector
   GtkWidget *model_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
   gtk_widget_set_margin_start(model_hbox, 16);
   gtk_widget_set_margin_end(model_hbox, 16);
@@ -1519,6 +1894,7 @@ static void on_activate(GApplication *app, gpointer user_data) {
   gtk_box_append(GTK_BOX(model_hbox), model_label);
   gtk_box_append(GTK_BOX(model_hbox), model_dropdown);
   
+  // Chat area
   GtkWidget *chat_scroller = gtk_scrolled_window_new();
   gtk_widget_set_vexpand(chat_scroller, TRUE);
   gtk_widget_set_hexpand(chat_scroller, TRUE);
@@ -1531,34 +1907,59 @@ static void on_activate(GApplication *app, gpointer user_data) {
   gtk_widget_set_margin_bottom(chat_box, 16);
   gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(chat_scroller), chat_box);
   
-  GtkWidget *input_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-  gtk_widget_set_margin_start(input_box, 16);
-  gtk_widget_set_margin_end(input_box, 16);
-  gtk_widget_set_margin_top(input_box, 12);
-  gtk_widget_set_margin_bottom(input_box, 16);
+  // Input area with multi-line text view
+  GtkWidget *input_container = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  gtk_widget_add_css_class(input_container, "input-container");
+  gtk_widget_set_margin_start(input_container, 16);
+  gtk_widget_set_margin_end(input_container, 16);
+  gtk_widget_set_margin_top(input_container, 12);
+  gtk_widget_set_margin_bottom(input_container, 16);
   
-  GtkWidget *entry = gtk_entry_new();
-  gtk_widget_set_hexpand(entry, TRUE);
-  gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "Type your message...");
+  // Text view in scrolled window
+  GtkWidget *prompt_scroller = gtk_scrolled_window_new();
+  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(prompt_scroller),
+                                GTK_POLICY_NEVER,
+                                GTK_POLICY_AUTOMATIC);
+  gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(prompt_scroller), 60);
+  gtk_scrolled_window_set_max_content_height(GTK_SCROLLED_WINDOW(prompt_scroller), 300);
+  gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(prompt_scroller), TRUE);
   
-  GtkWidget *spinner = gtk_spinner_new();
-  gtk_widget_set_visible(spinner, FALSE);
+  GtkWidget *text_view = gtk_text_view_new();
+  gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(text_view), GTK_WRAP_WORD_CHAR);
+  gtk_text_view_set_accepts_tab(GTK_TEXT_VIEW(text_view), FALSE);
+  gtk_widget_set_hexpand(text_view, TRUE);
+  gtk_text_view_set_top_margin(GTK_TEXT_VIEW(text_view), 8);
+  gtk_text_view_set_bottom_margin(GTK_TEXT_VIEW(text_view), 8);
+  gtk_text_view_set_left_margin(GTK_TEXT_VIEW(text_view), 12);
+  gtk_text_view_set_right_margin(GTK_TEXT_VIEW(text_view), 12);
+  gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(prompt_scroller), text_view);
   
-  GtkWidget *send_btn = gtk_button_new_with_label("Send");
-  gtk_widget_add_css_class(send_btn, "suggested-action");
+  // Button row
+  GtkWidget *button_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+  gtk_widget_set_halign(button_box, GTK_ALIGN_END);
+  gtk_widget_set_margin_top(button_box, 8);
   
-  GtkWidget *stop_btn = gtk_button_new_with_label("Stop");
-  gtk_widget_add_css_class(stop_btn, "destructive-action");
-  gtk_widget_set_sensitive(stop_btn, FALSE);
+  GtkWidget *attach_btn = gtk_button_new_from_icon_name("mail-attachment-symbolic");
+  gtk_widget_add_css_class(attach_btn, "flat");
+  gtk_widget_set_tooltip_text(attach_btn, "Attach image");
   
-  gtk_box_append(GTK_BOX(input_box), entry);
-  gtk_box_append(GTK_BOX(input_box), spinner);
-  gtk_box_append(GTK_BOX(input_box), send_btn);
-  gtk_box_append(GTK_BOX(input_box), stop_btn);
+  GtkWidget *audio_btn = gtk_button_new_from_icon_name("audio-input-microphone-symbolic");
+  gtk_widget_add_css_class(audio_btn, "flat");
+  gtk_widget_set_tooltip_text(audio_btn, "Voice input (coming soon)");
+  
+  GtkWidget *action_btn = gtk_button_new_with_label("⬆ Send");
+  gtk_widget_add_css_class(action_btn, "suggested-action");
+  
+  gtk_box_append(GTK_BOX(button_box), attach_btn);
+  gtk_box_append(GTK_BOX(button_box), audio_btn);
+  gtk_box_append(GTK_BOX(button_box), action_btn);
+  
+  gtk_box_append(GTK_BOX(input_container), prompt_scroller);
+  gtk_box_append(GTK_BOX(input_container), button_box);
   
   gtk_box_append(GTK_BOX(vbox), model_hbox);
   gtk_box_append(GTK_BOX(vbox), chat_scroller);
-  gtk_box_append(GTK_BOX(vbox), input_box);
+  gtk_box_append(GTK_BOX(vbox), input_container);
   
   gtk_paned_set_start_child(GTK_PANED(paned), sidebar);
   gtk_paned_set_end_child(GTK_PANED(paned), vbox);
@@ -1570,11 +1971,12 @@ static void on_activate(GApplication *app, gpointer user_data) {
   AppWidgets *aw = g_new0(AppWidgets, 1);
   aw->chat_box = GTK_BOX(chat_box);
   aw->chat_scroller = GTK_SCROLLED_WINDOW(chat_scroller);
-  aw->prompt_entry = GTK_ENTRY(entry);
-  aw->send_btn = GTK_BUTTON(send_btn);
-  aw->stop_btn = GTK_BUTTON(stop_btn);
+  aw->prompt_text_view = GTK_TEXT_VIEW(text_view);
+  aw->prompt_scroller = GTK_SCROLLED_WINDOW(prompt_scroller);
+  aw->action_btn = GTK_BUTTON(action_btn);
+  aw->attach_btn = GTK_BUTTON(attach_btn);
+  aw->audio_btn = GTK_BUTTON(audio_btn);
   aw->new_chat_btn = GTK_BUTTON(new_chat_btn);
-  aw->spinner = GTK_SPINNER(spinner);
   aw->model_dropdown = GTK_DROP_DOWN(model_dropdown);
   aw->conversations_list = GTK_LIST_BOX(conversations_list);
   aw->models_store = models_store;
@@ -1587,8 +1989,8 @@ static void on_activate(GApplication *app, gpointer user_data) {
   aw->current_assistant_box = NULL;
   aw->theme_btn = theme_btn;
   aw->dark_theme = load_theme_preference();
+  aw->pending_images = g_ptr_array_new_with_free_func(g_free);
   
-  // Load conversations and apply theme
   load_conversations(aw);
   
   if (aw->conversations->len == 0) {
@@ -1599,17 +2001,21 @@ static void on_activate(GApplication *app, gpointer user_data) {
       display_conversation(aw, aw->current_conversation);
   }
   
-  // Apply initial theme
   apply_theme(aw, aw->dark_theme);
   
   // Connect signals
-  g_signal_connect(send_btn, "clicked", G_CALLBACK(on_send_clicked), aw);
-  g_signal_connect(stop_btn, "clicked", G_CALLBACK(on_stop_clicked), aw);
+  g_signal_connect(action_btn, "clicked", G_CALLBACK(on_action_btn_clicked), aw);
+  g_signal_connect(attach_btn, "clicked", G_CALLBACK(on_attach_clicked), aw);
+  g_signal_connect(audio_btn, "clicked", G_CALLBACK(on_audio_clicked), aw);
   g_signal_connect(new_chat_btn, "clicked", G_CALLBACK(on_new_chat_clicked), aw);
-  g_signal_connect(entry, "activate", G_CALLBACK(on_entry_activate), aw);
   g_signal_connect(model_dropdown, "notify::selected", G_CALLBACK(on_model_selected), aw);
   g_signal_connect(conversations_list, "row-activated", G_CALLBACK(on_conversation_selected), aw);
   g_signal_connect(theme_btn, "clicked", G_CALLBACK(on_theme_toggled), aw);
+  
+  // Connect text buffer change signal for auto-resize
+  GtkTextBuffer *buffer = gtk_text_view_get_buffer(aw->prompt_text_view);
+  g_signal_connect(buffer, "changed", G_CALLBACK(on_text_buffer_changed), aw);
+  
   g_signal_connect(win, "destroy", G_CALLBACK(on_window_destroy), aw);
   
   update_conversations_list(aw);

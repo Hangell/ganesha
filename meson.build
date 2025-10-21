@@ -7,8 +7,9 @@ gtkdep   = dependency('gtk4')
 adwdep   = dependency('libadwaita-1')
 soupdep  = dependency('libsoup-3.0')
 jsondep  = dependency('json-glib-1.0')
+srcdep   = dependency('gtksourceview-5')   # <-- novo
 
 executable('ganesha',
   sources: ['main.c'],
-  dependencies: [gtkdep, adwdep, soupdep, jsondep]
+  dependencies: [gtkdep, adwdep, soupdep, jsondep, srcdep]
 )
